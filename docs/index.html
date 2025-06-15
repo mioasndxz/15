@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLOv8 Web Demo</title>
+    <style>
+        body { font-family: 'Noto Sans KR', sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: #f0f2f5; margin: 0; overflow: hidden; }
+        .screen { display: none; flex-direction: column; align-items: center; justify-content: center; width: 100%; max-width: 720px; padding: 20px; box-sizing: border-box; }
+        .screen.active { display: flex; }
+        #loadingScreen p { font-size: 1.2em; color: #333; }
+        #video-container { position: relative; width: 640px; height: 480px; background-color: #000; border-radius: 8px; overflow: hidden; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+        .button-group { display: flex; gap: 15px; margin-top: 20px; }
+        button { padding: 12px 25px; font-size: 1.1em; border: none; border-radius: 30px; cursor: pointer; background-color: #007bff; color: white; transition: background-color 0.3s, transform 0.2s; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        button:hover { background-color: #0056b3; transform: translateY(-2px); }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; box-shadow: none; }
+        .error { color: #dc3545; margin-top: 10px; font-weight: bold; }
+        #analysisStatusMessage { font-style: italic; color: #777; }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            display: none; /* Default hidden */
+            backdrop-filter: blur(5px);
+        }
+        .modal-content {
+            background: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+            max-width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            text-align: center;
+            position: relative;
+            animation: fadeInScale 0.3s ease-out;
+            width: 700px; /* Adjust as needed */
+        }
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .modal-close-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: none;
+            border: none;
+            font-size: 2em;
+            color: #999;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .modal-close-btn:hover { color: #666; }
+        .modal-content h3 { color: #333; margin-bottom: 15px; font-size: 1.5em; }
+        .modal-img-container { margin-bottom: 20px; border: 1px solid #eee; border-radius: 8px; overflow: hidden; }
+        #modalCanvas { display: block; max-width: 100%; height: auto; }
+        .spaceBox, .tipsBox, .scoreBox, #modalChecklistInfo {
+            background-color: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .spaceBox h3, .tipsBox h3, .scoreBox h3, #modalChecklistInfo h3 {
+            color: #007bff;
+            font-size: 1.2em;
+            margin-top: 0;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #e0e0e0;
+            padding-bottom: 5px;
+        }
+        .scoreBox p { font-size: 1.3em; font-weight: bold; color: #28a745; }
+        #modalFeedbackMessage { font-size: 1.1em; color: #555; margin-top: 20px; font-weight: bold; }
+        #modalChecklistInfo ul { list-style: none; padding: 0; margin: 0; }
+        #modalChecklistInfo li { margin-bottom: 8px; display: flex; align-items: center; }
+        #modalChecklistInfo li input[type="checkbox"] { margin-right: 10px; transform: scale(1.2); }
+    </style>
+</head>
+<body>
+
+<div id="loadingScreen" class="screen active">
+    <p>모델 로딩 중... 잠시만 기다려 주세요.</p>
+</div>
+
+<div id="cameraScreen" class="screen">
+    <div id="video-container">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="liveCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div class="button-group">
+        <button id="analyzeBeforeBtn">📸 현재 공간 분석</button>
+        <button id="analyzeAfterBtn" disabled>✅ 정리 후 점수 매기기</button>
+    </div>
+
+    <p class="error" id="errorMessage"></p>
+    <p id="analysisStatusMessage" style="text-align: center; color: #555; margin-top: 10px;"></p>
+</div>
+
+<div id="resultModalOverlay" class="modal-overlay">
+    <div class="modal-content">
+        <button class="modal-close-btn" onclick="closeResultModal()">&times;</button>
+        <h3 id="modalTitle"></h3>
+        <div class="modal-img-container">
+            <canvas id="modalCanvas" width="640" height="480" style="width: 100%; height: auto;"></canvas>
+        </div>
+        <div class="spaceBox" id="modalSpaceInfo"></div>
+        <div class="tipsBox" id="modalTipsInfo"></div>
+        <div class="scoreBox" id="modalScoreInfo"></div>
+        <div id="modalChecklistInfo"></div>
+        <p id="modalFeedbackMessage"></p>
+        <button onclick="closeResultModal()">확인</button>
+        <button id="resetAppBtn" style="background: #dc3545; display: none;" onclick="resetApplication()">다시 시작</button>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0"></script>
+<script src="./models/yolov8n_oiv7_web_model/label.js"></script>
+<script>
+    const loadingScreen = document.getElementById("loadingScreen");
+    const cameraScreen = document.getElementById("cameraScreen");
+    const video = document.getElementById("video");
+    const liveCanvas = document.getElementById("liveCanvas");
+    const liveCtx = liveCanvas.getContext("2d");
+    const analyzeBeforeBtn = document.getElementById("analyzeBeforeBtn");
+    const analyzeAfterBtn = document.getElementById("analyzeAfterBtn");
+    const errorMessage = document.getElementById("errorMessage");
+    const analysisStatusMessage = document.getElementById("analysisStatusMessage");
+
+    const resultModalOverlay = document.getElementById("resultModalOverlay");
+    const modalTitle = document.getElementById("modalTitle");
+    const modalCanvas = document.getElementById("modalCanvas");
+    const modalCtx = modalCanvas.getContext("2d");
+    const modalSpaceInfo = document.getElementById("modalSpaceInfo");
+    const modalTipsInfo = document.getElementById("modalTipsInfo");
+    const modalScoreInfo = document.getElementById("modalScoreInfo");
+    const modalChecklistInfo = document.getElementById("modalChecklistInfo");
+    const modalFeedbackMessage = document.getElementById("modalFeedbackMessage");
+    const resetAppBtn = document.getElementById("resetAppBtn");
+
+    let yoloModel = null;
+    // 여기에서 window.customLabels를 참조해야 합니다.
+    const customLabels = window.customLabels || []; // 안전하게 빈 배열로 초기화 (label.js 로딩 실패 대비)
+    
+    let beforeLabels = [];
+    let beforeSnapshotData = null; 
+    
+    const MODEL_INPUT_SIZE = 640; 
+    const IOU_THRESHOLD = 0.45;
+    const CONF_THRESHOLD = 0.25; // 이 값을 0.15 또는 0.1로 낮춰서 시도해 볼 수 있습니다.
+
+    // Open Images V7 레이블 중 방에서 '어지럽힘'으로 간주될 수 있는 객체들의 목록 (최종 업데이트됨)
+    const hardcodedMessyLabels = [
+        // 의류 및 개인 용품
+        'Backpack', 'Bag', 'Briefcase', 'Clothing', 'Coat', 'Dress', 'Footwear', 'Glove', 'Handbag', 'Hat', 'Helmet',
+        'High heels', 'Jacket', 'Jeans', 'Luggage and bags', 'Miniskirt', 'Pants', 'Sandal', 'Scarf', 'Shirt', 'Shoes',
+        'Shorts', 'Sock', 'Suit', 'Suitcase', 'Swimwear', 'Tie', 'Trousers', 'Watch',
+        'Glasses', 'Sunglasses', 'Earrings', 'Necklace', 'Ring', 'Crown', 'Tiara', 'Fashion accessory',
+        'Cosmetics', 'Face powder', 'Hair dryer', 'Hair spray', 'Lipstick', 'Perfume', 'Toothbrush', 'Personal care',
+
+        // 책 및 사무용품
+        'Book', 'Bookcase', 'Paper', 'Magazine', 'Pen', 'Pencil case', 'Pencil sharpener', 'Eraser', 'Ring binder',
+        'Office supplies', 'Ruler', 'Stapler', 'Whiteboard', 'Printer', 'Fax',
+
+        // 음식 및 주방 용품 (방에 있을 경우 어지러움)
+        'Apple', 'Banana', 'Bread', 'Cabbage', 'Carrot', 'Cheese', 'Common fig', 'Cucumber', 'Egg (Food)', 'Fruit',
+        'Garden Asparagus', 'Grape', 'Grapefruit', 'Lemon', 'Mango', 'Mushroom', 'Orange', 'Pancake', 'Peach', 'Pear',
+        'Pineapple', 'Pizza', 'Potato', 'Pumpkin', 'Radish', 'Salad', 'Sandwich', 'Snack', 'Strawberry', 'Sushi', 'Taco',
+        'Tart', 'Tomato', 'Vegetable', 'Watermelon', 'Winter melon', 'Zucchini',
+        'Beer', 'Coffee', 'Cocktail', 'Drink', 'Juice', 'Milk', 'Tea', 'Wine',
+        'Bagel', 'Baked goods', 'Candy', 'Cookie', 'Croissant', 'Dessert', 'Doughnut', 'Hamburger', 'Hot dog', 'Ice cream',
+        'Muffin', 'Popcorn', 'Pretzel', 'Submarine sandwich', 'Waffle',
+        'Bottle', 'Bottle opener', 'Bowl', 'Can opener', 'Coffee cup', 'Container', 'Cooking spray', 'Cup', 'Drinking straw',
+        'Frying pan', 'Jug', 'Kettle', 'Kitchen knife', 'Kitchen utensil', 'Kitchenware', 'Ladle', 'Measuring cup',
+        'Mixing bowl', 'Mug', 'Plate', 'Platter', 'Saucer', 'Serving tray', 'Spice rack', 'Spoon', 'Teapot', 'Tin can',
+        'Tableware', 'Whisk', 'Wine glass', 'Wok',
+
+        // 가구 및 소품 (방치될 경우 어지러움)
+        'Chair', 'Couch', 'Bed', 'Desk', 'Nightstand', 'Table', 'Coffee table', 'Kitchen & dining room table', 'Stool',
+        'Studio couch', 'Sofa bed', 'Cabinetry', 'Chest of drawers', 'Closet', 'Cupboard', 'Drawer', 'Filing cabinet',
+        'Shelf', 'Wardrobe', 'Television', 'Computer keyboard', 'Computer monitor', 'Computer mouse', 'Laptop',
+        'Mobile phone', 'Remote control', 'Tablet computer', 'Telephone', 'Ipod', 'Headphones', 'Speaker',
+        'Alarm clock', 'Clock', 'Digital clock', 'Wall clock',
+        'Lamp', 'Light bulb', 'Flowerpot', 'Houseplant', 'Vase', 'Picture frame', 'Poster', 'Mirror',
+        'Pillow', 'Towel', 'Blanket', 'Curtain', 'Window blind',
+        'Box', 'Plastic bag', 'Waste container', 
+
+        // 장난감 및 스포츠 용품
+        'Ball', 'Balloon', 'Doll', 'Flying disc', 'Toy', 'Teddy bear',
+        'Baseball bat', 'Baseball glove', 'Billiard table', 'Bowling equipment', 'Cricket ball', 'Dumbbell', 'Football',
+        'Football helmet', 'Golf ball', 'Golf cart', 'Racket', 'Rugby ball', 'Skateboard', 'Ski', 'Snowboard',
+        'Sports equipment', 'Table tennis racket', 'Tennis ball', 'Tennis racket', 'Unicycle', 'Volleyball (Ball)',
+
+        // 기타 (방에 있을 법한 잡동다니)
+        'Accordion', 'Axe', 'Band-aid', 'Banjo', 'Barrel', 'Bell pepper', 'Binoculars', 'Blender', 'Bomb', 'Cello', 'Chime',
+        'Chisel', 'Chopsticks', 'Coffeemaker', 'Coin', 'Corded phone', 'Crutch', 'Cutting board', 'Dagger', 'Dice',
+        'Dishwasher', 'Door handle', 'Drill (Tool)', 'Drum', 'Fountain', 'Gas stove', 'Grinder', 'Guacamole', 'Guitar',
+        'Hammer', 'Harmonica', 'Harp', 'Harpsichord', 'Heater', 'Honeycomb', 'Humidifier', 'Jacuzzi', 'Jet ski', 'Kite',
+        'Knife', 'Ladder', 'Lantern', 'Light switch', 'Maracas', 'Mechanical fan', 'Medical equipment', 'Microphone',
+        'Microwave oven', 'Mixer', 'Musical instrument', 'Musical keyboard', 'Nail (Construction)', 'Oboe', 'Office building',
+        'Organ (Musical Instrument)', 'Oven', 'Paddle', 'Paper cutter', 'Paper towel', 'Pianoforte', 'Picnic basket',
+        'Pliers', 'Plumbing fixture', 'Power plugs and sockets', 'Pressure cooker', 'Punching bag', 'Ratchet (Device)',
+        'Refrigerator', 'Scissors', 'Screwdriver', 'Sewing machine', 'Shower', 'Sink', 'Slow cooker', 'Soap dispenser',
+        'Spatula', 'Stethoscope', 'Stop sign', 'Syringe', 'Tank', 'Tap', 'Tool', 'Torch', 'Traffic light', 'Traffic sign',
+        'Training bench', 'Treadmill', 'Tripod', 'Trombone', 'Trumpet', 'Turkey', 'Turtle', 'Umbrella', 'Waffle iron', 'Wheelchair', 'Wrench',
+        'Wagon', 'Walkie-talkie', 'Water bottle', 'Water heater', 'Water cooler', 'Welding mask', 'Washing machine',
+        'Vacuum cleaner', 'Steam iron'
+    ];
+    
+    let messyLabelsForScoring = [];
+
+
+    function mapLabelToFriendlyName(label) {
+        if(!label) return '';
+        return label; 
+    }
+
+    const tipDictionary = {
+        'Book': "📚 책은 책꽂이나 선반에 정리해 주세요.",
+        'Cup': "☕ 컵은 씻어서 건조대에 놓거나 수납하세요.",
+        'Bottle': "🧴 병은 내용물을 비우고 분리수거하거나 제자리에 보관하세요.",
+        'Laptop': "💻 노트북은 사용 후 닫아서 정해진 위치에 놓으세요.",
+        'Chair': "🪑 의자는 사용 후 책상 아래로 밀어 넣어주세요.",
+        'Backpack': "🎒 가방은 내용물을 비우고 제자리에 걸어두세요.",
+        'Mobile phone': "📱 휴대폰은 충전 위치나 전용 거치대에 보관하세요.",
+        'Remote control': "🕹️ 리모컨은 제자리에 두거나 수납함에 넣어주세요.",
+        'Computer keyboard': "⌨️ 사용 후에는 제 위치에 두거나 정리하세요.",
+        'Mouse': "🖱️ 사용 후에는 제 위치에 두거나 정리하세요.",
+        'Toothbrush': "🪥 칫솔은 사용 후 칫솔꽂이에 제대로 보관하세요.",
+        'Clothing': "👕 옷은 옷장이나 세탁 바구니에 넣어주세요.",
+        'Shoes': "👟 신발은 신발장에 정리해 주세요.",
+        // 'Dishes'는 Open Images V7에 없을 가능성이 높으므로, 관련 레이블로 대체 고려
+        'Plate': "🍽️ 접시는 설거지 후 제자리에 수납하세요.", // Plate나 Bowl 등으로 대체
+        'Paper': "📄 종이는 분류하여 재활용하거나 파일에 보관하세요.",
+        'Cosmetics': "💄 화장품은 화장대에 정돈하거나 서랍에 보관하세요.",
+        'Toy': "🧸 장난감은 놀이 후 장난감 상자에 정리하세요.",
+        'Waste container': "🗑️ 쓰레기통이 가득 찼다면 비워주세요.",
+        'Pillow': "🛌 베개는 침대 위에 가지런히 놓으세요.",
+        'Towel': "🛀 수건은 사용 후 빨래통에 넣거나 건조대에 널어주세요.",
+        'Bag': "👜 가방은 내용물을 비우고 정해진 곳에 두세요.",
+        'Food': "🍎 음식물 쓰레기는 제때 버리고, 남은 음식은 냉장고에 보관하세요."
+    };
+
+    const checklistDictionary = {
+        'Book': ["책꽂이에 넣기", "읽지 않는 책 분류"],
+        'Cup': ["컵 씻기", "건조대에 놓기", "수납하기"],
+        'Bottle': ["뚜껑 닫기", "재활용함에 넣기", "내용물 비우기"],
+        'Laptop': ["덮개 닫기", "충전기 정리", "전원 끄기"],
+        'Chair': ["정위치 정렬", "의자 위 물건 정리"],
+        'Backpack': ["내용물 비우기", "제자리에 걸기/두기"],
+        'Mobile phone': ["충전 위치에 두기", "거치대에 놓기"],
+        'Remote control': ["제자리로 옮기기"],
+        'Computer keyboard': ["정리 후 제자리에 놓기"],
+        'Mouse': ["정리 후 제자리에 놓기"],
+        'Toothbrush': ["칫솔꽂이에 보관하기"],
+        'Clothing': ["옷장/서랍에 넣기", "세탁 바구니에 넣기"],
+        'Shoes': ["신발장에 넣기", "흙 털기"],
+        'Plate': ["설거지 하기", "건조/수납하기"], // Plate나 Bowl 등으로 대체
+        'Paper': ["분류하여 재활용", "서류철에 정리"],
+        'Cosmetics': ["화장대에 정돈하기", "서랍에 보관"],
+        'Toy': ["장난감 상자에 넣기", "종류별로 분류"],
+        'Waste container': ["쓰레기 비우기", "쓰레기통 닦기"],
+        'Pillow': ["침대 정리하기", "베개 커버 교체"],
+        'Towel': ["빨래통에 넣기", "건조대에 널기"],
+        'Bag': ["내용물 비우기", "정해진 곳에 두기"],
+        'Food': ["남은 음식 냉장고에 넣기", "유통기한 확인"]
+    };
+
+    const spaceGroups = {
+        '책상 주변': ["Book", "Laptop", "Mouse", "Computer keyboard", "Cup", "Chair", "Pen", "Paper"],
+        '침실': ["Bed", "Pillow", "Blanket", "Book", "Clothing", "Nightstand", "Wardrobe"], // Wardrobe 추가
+        '주방': ["Cup", "Bottle", "Bowl", "Refrigerator", "Microwave oven", "Plate", "Fork", "Knife", "Spoon", "Oven", "Coffee cup", "Teapot", "Wok", "Frying pan"], // 주방 관련 추가
+        '거실': ["Couch", "Television", "Potted plant", "Chair", "Remote control", "Bookcase", "Coffee table", "Vase", "Picture frame", "Lamp", "Rug"], // Lamp, Rug (양탄자) 추가
+        '욕실': ["Toilet", "Toothbrush", "Cosmetics", "Mirror", "Towel", "Shower", "Soap dispenser", "Bathtub", "Sink"], // Bathtub, Sink 추가
+        '현관/복도': ["Shoes", "Backpack", "Bag", "Coat", "Hat", "Umbrella"]
+    };
+
+    function showScreen(screenId) {
+        document.querySelectorAll('.screen').forEach(screen => {
+            screen.classList.remove('active');
+        });
+        document.getElementById(screenId).classList.add('active');
+    }
+
+    function openResultModal(title, spaceInfo, tipsInfo, scoreInfo, checklistInfo, feedbackMessage, showResetBtn = false) {
+        modalTitle.textContent = title;
+        modalSpaceInfo.innerHTML = `<h3>🏠 예상 공간</h3><p>${spaceInfo}</p>`;
+        modalTipsInfo.innerHTML = `<h3>💡 정리 팁</h3><p>${tipsInfo}</p>`;
+        modalScoreInfo.innerHTML = scoreInfo ? `<h3>✨ 정리 점수</h3><p>${scoreInfo}</p>` : '';
+        modalChecklistInfo.innerHTML = checklistInfo ? `<h3>✔️ 정리 체크리스트</h3>${checklistInfo}` : '';
+        modalFeedbackMessage.textContent = feedbackMessage;
+        resetAppBtn.style.display = showResetBtn ? 'block' : 'none';
+
+        resultModalOverlay.style.display = 'flex';
+    }
+
+    function closeResultModal() {
+        resultModalOverlay.style.display = 'none';
+    }
+
+    function guessSpace(labels) {
+        const counts = {};
+        for (const key in spaceGroups) {
+            // labels 배열의 각 항목이 spaceGroups[key]에 포함되는지 확인
+            counts[key] = labels.filter(l => spaceGroups[key].includes(l)).length;
+        }
+        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+        if (sorted.length > 0 && sorted[0][1] > 0) {
+            return sorted[0][0];
+        }
+        return "알 수 없는 공간";
+    }
+
+    function generateTips(labels) {
+        const uniqueLabels = [...new Set(labels)];
+        const tips = uniqueLabels.map(l => tipDictionary[l]).filter(Boolean);
+        return tips.length ? tips.join("<br>") : "👍 현재 특별히 정리할 물건이 감지되지 않았습니다!"; // 줄바꿈 추가
+    }
+
+    function calculateScore(before, after) {
+        let score = 50;
+        let feedback = "";
+
+        const beforeCounts = {};
+        before.map(l => l.toLowerCase()).forEach(item => { beforeCounts[item] = (beforeCounts[item] || 0) + 1; });
+        const afterCounts = {};
+        after.map(l => l.toLowerCase()).forEach(item => { afterCounts[item] = (afterCounts[item] || 0) + 1; });
+
+        let removedMessyCount = 0;
+        let addedMessyCount = 0;
+        
+        // 어지럽힘 객체에 대해서만 변화량 계산
+        messyLabelsForScoring.forEach(messyLabel => { // messyLabelsForScoring는 이미 소문자
+            const beforeQty = beforeCounts[messyLabel] || 0;
+            const afterQty = afterCounts[messyLabel] || 0;
+
+            if (beforeQty > afterQty) {
+                removedMessyCount += (beforeQty - afterQty);
+            } else if (afterQty > beforeQty) {
+                addedMessyCount += (afterQty - beforeQty);
+            }
+        });
+
+        score += removedMessyCount * 10; // 어지럽힘 객체 감소 시 점수 크게 증가
+        score -= addedMessyCount * 15; // 어지럽힘 객체 증가 시 점수 크게 감소
+
+        // 전체 객체 수 변화도 반영 (정리 = 물건 감소)
+        let totalRemoved = 0;
+        let totalAdded = 0;
+        const allBeforeLabels = new Set([...Object.keys(beforeCounts), ...Object.keys(afterCounts)]);
+        allBeforeLabels.forEach(label => {
+            const beforeQty = beforeCounts[label] || 0;
+            const afterQty = afterCounts[label] || 0;
+            if (beforeQty > afterQty) {
+                totalRemoved += (beforeQty - afterQty);
+            } else if (afterQty > beforeQty) {
+                totalAdded += (afterQty - beforeQty);
+            }
+        });
+        score += totalRemoved * 2; // 전체 객체 감소
+        score -= totalAdded * 5; // 전체 객체 증가 (새로운 물건 생김)
+
+
+        if (score > 100) score = 100;
+        if (score < 0) score = 0;
+
+        if (score >= 90) feedback = "정말 깨끗하게 정리했어요! 훌륭합니다! 🎉";
+        else if (score >= 70) feedback = "아주 잘 정리했어요! 다음엔 더 완벽하게! 👍";
+        else if (score >= 50) feedback = "꽤 괜찮게 정리했네요. 조금만 더 노력하면 완벽해져요! 😉";
+        else feedback = "조금 더 정리해야 할 것 같아요. 다음 번에는 더 잘할 수 있어요! 💪";
+
+        return { score: `🧹 정리 점수: ${score}점 (정리 전 ${before.length}개 → 정리 후 ${after.length}개 감지)`, feedback: feedback };
+    }
+
+
+    function generateChecklistHtml(labels) {
+        let html = '<ul>'; 
+        const uniqueLabels = [...new Set(labels)];
+        let hasTasks = false;
+
+        uniqueLabels.forEach(label => {
+            const tasks = checklistDictionary[label];
+            if (tasks && tasks.length > 0) {
+                hasTasks = true;
+                html += `<li><strong>${mapLabelToFriendlyName(label)} 관련:</strong></li>`;
+                tasks.forEach(task => {
+                    html += `<li><input type="checkbox"> ${task}</li>`;
+                });
+            }
+        });
+
+        if (!hasTasks) {
+            html += '<li>현재 정리할 항목이 감지되지 않았습니다.</li>'; // 메시지 수정
+        }
+        html += '</ul>';
+        return html;
+    }
+
+    function drawBoundingBoxes(targetCtx, targetCanvas, results) {
+        targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+
+        // 이미지 복사 (스냅샷 캔버스에 이미 그려져 있으므로 다시 그릴 필요 없음)
+        // 만약 modalCanvas에 비디오 프레임을 그리는 부분이 analyzeSnapshot에 있다면 이 부분은 생략 가능
+        // targetCtx.drawImage(video, 0, 0, targetCanvas.width, targetCanvas.height); 
+
+        results.forEach(prediction => {
+            const [x, y, width, height] = prediction.bbox;
+            targetCtx.strokeStyle = '#00FF00';
+            targetCtx.lineWidth = 3;
+            targetCtx.strokeRect(x, y, width, height);
+
+            targetCtx.fillStyle = '#00FF00';
+            targetCtx.font = 'bold 18px Noto Sans KR';
+            const friendlyLabel = mapLabelToFriendlyName(prediction.class);
+            const text = `${friendlyLabel} (${Math.round(prediction.score * 100)}%)`;
+            const textWidth = targetCtx.measureText(text).width;
+            
+            const textBgY = y - 20;
+            const textY = y - 5;
+
+            if (textBgY < 0) {
+                targetCtx.fillRect(x, y, textWidth + 8, 20);
+                targetCtx.fillStyle = '#000000';
+                targetCtx.fillText(text, x + 4, y + 15);
+            } else {
+                targetCtx.fillRect(x, textBgY, textWidth + 8, 20);
+                targetCtx.fillStyle = '#000000';
+                targetCtx.fillText(text, x + 4, textY);
+            }
+        });
+    }
+
+
+    async function processYoloOutput(output, imgWidth, imgHeight, labels, iouThreshold, confThreshold) {
+        let detections = [];
+        // `output`은 tf.Tensor이므로 `.arraySync()` 대신 `.dataSync()`를 사용
+        const data = output.dataSync(); 
+
+        const boxes = [];
+        const scores = [];
+        const classes = [];
+
+        // YOLOv8 출력 텐서의 shape를 다시 확인합니다.
+        // 일반적으로 YOLOv8 웹 모델 (tfjs 변환된)은 [1, num_predictions, 4 + num_classes] 형태를 가집니다.
+        // 예를 들어 [1, 25200, 85] (batch_size, num_bboxes, 4_coords + num_classes)
+        const numPredictions = output.shape[1]; // 예를 들어 25200
+        const numClasses = output.shape[2] - 4; // 4는 bbox (x,y,w,h)
+
+        console.log(`[processYoloOutput] numPredictions: ${numPredictions}, numClasses: ${numClasses}`);
+        if (numPredictions <= 0 || numClasses <= 0) {
+            console.warn("모델 출력의 예측 또는 클래스 수가 유효하지 않습니다.");
+            tf.dispose(output);
+            return detections;
+        }
+
+        for (let i = 0; i < numPredictions; i++) {
+            const offset = i * (4 + numClasses);
+            
+            // 데이터가 유효한 범위 내에 있는지 확인 (혹시 모를 오류 방지)
+            if (offset + 4 + numClasses > data.length) {
+                console.warn(`데이터 범위 초과: offset ${offset}, data length ${data.length}`);
+                continue;
+            }
+
+            const x_center_normalized = data[offset];
+            const y_center_normalized = data[offset + 1];
+            const width_normalized = data[offset + 2];
+            const height_normalized = data[offset + 3];
+
+            let maxScore = -1;
+            let classId = -1;
+            for (let j = 0; j < numClasses; j++) {
+                const classScore = data[offset + 4 + j];
+                if (classScore > maxScore) {
+                    maxScore = classScore;
+                    classId = j;
+                }
+            }
+
+            if (maxScore >= confThreshold) {
+                const x_center_abs = x_center_normalized * imgWidth;
+                const y_center_abs = y_center_normalized * imgHeight;
+                const width_abs = width_normalized * imgWidth;
+                const height_abs = height_normalized * imgHeight;
+
+                const x1 = x_center_abs - width_abs / 2;
+                const y1 = y_center_abs - height_abs / 2;
+                const x2 = x_center_abs + width_abs / 2;
+                const y2 = y_center_abs + height_abs / 2;
+
+                boxes.push([x1, y1, x2, y2]);
+                scores.push(maxScore);
+                classes.push(classId);
+            }
+        }
+        
+        console.log(`[processYoloOutput] Conf threshold (${confThreshold}) 적용 후 감지된 박스 수: ${boxes.length}`);
+
+        if (boxes.length === 0) {
+            tf.dispose(output);
+            return detections; // 감지된 박스가 없으면 빈 배열 반환
+        }
+
+        const nmsTensor = await tf.image.nonMaxSuppressionAsync(
+            tf.tensor2d(boxes),
+            tf.tensor1d(scores),
+            boxes.length,
+            iouThreshold,
+            confThreshold
+        );
+
+        const nmsIndices = await nmsTensor.array();
+        
+        console.log(`[processYoloOutput] NMS 적용 후 최종 선택된 박스 수: ${nmsIndices.length}`);
+
+
+        for (const i of nmsIndices) {
+            const x1 = boxes[i][0];
+            const y1 = boxes[i][1];
+            const x2 = boxes[i][2];
+            const y2 = boxes[i][3];
+
+            // labels 배열의 유효성 검사 추가
+            if (classes[i] !== undefined && labels[classes[i]] !== undefined) {
+                 detections.push({
+                    bbox: [x1, y1, x2 - x1, y2 - y1],
+                    class: labels[classes[i]], 
+                    score: scores[i]
+                });
+            } else {
+                console.warn(`[processYoloOutput] Undefined classId or label at index ${classes[i]}. Skipping detection.`);
+            }
+           
+        }
+        
+        tf.dispose(output); // output 텐서 해제
+        tf.dispose(nmsTensor); // NMS 결과 텐서 해제
+
+        return detections;
+    }
+
+
+    async function detectLiveObjects() {
+        if (!yoloModel || video.paused || video.ended) {
+            // 모델 로딩 완료를 기다리거나 비디오가 준비될 때까지 기다림
+            setTimeout(() => requestAnimationFrame(detectLiveObjects), 100); 
+            return;
+        }
+
+        liveCtx.clearRect(0, 0, liveCanvas.width, liveCanvas.height); 
+        
+        // requestAnimationFrame 사용을 권장하지만, 이 경우는 setTimeout으로 제어
+        // requestAnimationFrame(detectLiveObjects); // 주석 처리된 부분
+        
+        try {
+            const tfImage = tf.browser.fromPixels(video);
+            const resized = tf.image.resizeBilinear(tfImage, [MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+            const normalized = resized.div(255.0);
+            const expanded = normalized.expandDims(0); 
+
+            // YOLOv8 모델 추론
+            const predictions = await yoloModel.executeAsync(expanded);
+            
+            tfImage.dispose();
+            resized.dispose();
+            normalized.dispose();
+            expanded.dispose();
+
+            // processYoloOutput 함수에서 predictions 텐서가 dispose되도록 수정했으므로, 여기서 predictions.dispose()는 불필요
+            const results = await processYoloOutput(predictions, video.videoWidth, video.videoHeight, customLabels, IOU_THRESHOLD, CONF_THRESHOLD);
+            
+            drawBoundingBoxes(liveCtx, liveCanvas, results);
+
+        } catch (e) {
+            console.error("실시간 감지 오류:", e);
+        }
+        
+        // 다음 프레임을 위해 다시 호출
+        setTimeout(() => requestAnimationFrame(detectLiveObjects), 100); 
+    }
+
+    async function analyzeSnapshot(stage) {
+        errorMessage.textContent = "";
+        analysisStatusMessage.textContent = "🔍 분석 중...";
+        analyzeBeforeBtn.disabled = true;
+        analyzeAfterBtn.disabled = true;
+
+        if (!yoloModel) {
+            errorMessage.textContent = "❗ 모델이 아직 로드되지 않았습니다. 잠시 후 다시 시도해주세요.";
+            analysisStatusMessage.textContent = "";
+            analyzeBeforeBtn.disabled = false;
+            return;
+        }
+
+        try {
+            if (video.readyState < 2) {
+                throw new Error("비디오 프레임이 아직 준비되지 않았습니다. 잠시 후 다시 시도해주세요.");
+            }
+
+            modalCanvas.width = video.videoWidth;
+            modalCanvas.height = video.videoHeight;
+            modalCtx.clearRect(0, 0, modalCanvas.width, modalCanvas.height);
+            modalCtx.drawImage(video, 0, 0, modalCanvas.width, modalCanvas.height);
+
+            const tfImage = tf.browser.fromPixels(modalCanvas);
+            const resized = tf.image.resizeBilinear(tfImage, [MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+            const normalized = resized.div(255.0);
+            const expanded = normalized.expandDims(0);
+
+            const predictions = await yoloModel.executeAsync(expanded);
+            
+            tfImage.dispose();
+            resized.dispose();
+            normalized.dispose();
+            expanded.dispose();
+
+            const results = await processYoloOutput(predictions, modalCanvas.width, modalCanvas.height, customLabels, IOU_THRESHOLD, CONF_THRESHOLD);
+            
+            const rawLabels = results.map(r => r.class);
+
+            // 디버깅을 위한 로그 추가
+            console.log("✅ customLabels.length (analyzeSnapshot):", customLabels.length);
+            console.log("📷 snapshot size:", modalCanvas.width, modalCanvas.height);
+            console.log("🔍 감지된 rawLabels (analyzeSnapshot):", rawLabels);
+
+            drawBoundingBoxes(modalCtx, modalCanvas, results);
+
+            const spaceGuess = guessSpace(rawLabels);
+            const tips = generateTips(rawLabels);
+
+            let aiMessage = "";
+            const messyObjectsDetected = rawLabels
+                .filter(label => typeof label === 'string' && messyLabelsForScoring.includes(label.toLowerCase()))
+                .length;
+            const totalObjectsDetected = rawLabels.length;
+
+            if (totalObjectsDetected === 0) {
+                aiMessage = "🧼 아주 깨끗한 상태입니다. 감지된 물건이 없습니다."; // 메시지 수정
+            } else if (messyObjectsDetected / totalObjectsDetected < 0.2) {
+                aiMessage = "🧹 정돈된 상태입니다.";
+            } else {
+                aiMessage = "❗ 어수선한 상태입니다. 정리가 필요해요.";
+            }
+
+            if (stage === 'before') {
+                beforeLabels = rawLabels;
+                
+                openResultModal(
+                    "📌 정리 전 공간 분석 결과",
+                    spaceGuess,
+                    tips,
+                    '',
+                    generateChecklistHtml(rawLabels),
+                    aiMessage 
+                );
+                analyzeAfterBtn.disabled = false;
+                analyzeBeforeBtn.disabled = false;
+            } else {
+                const { score, feedback } = calculateScore(beforeLabels, rawLabels);
+                
+                openResultModal(
+                    "✨ 정리 후 점수 결과",
+                    spaceGuess,
+                    tips, 
+                    score, 
+                    generateChecklistHtml(rawLabels),
+                    `${feedback} ${aiMessage}`, 
+                    true
+                );
+                analyzeBeforeBtn.disabled = true;
+            }
+        } catch (e) {
+            console.error("분석 오류:", e);
+            errorMessage.textContent = "❗ 분석 중 오류가 발생했습니다: " + e.message;
+        } finally {
+            analysisStatusMessage.textContent = "";
+            if (stage === 'before') { 
+                analyzeBeforeBtn.disabled = false;
+                analyzeAfterBtn.disabled = false;
+            } else { // stage === 'after'일 때만 다시 시작 버튼 보이고, 다른 버튼은 비활성화 유지
+                 // analyzeBeforeBtn.disabled = true; (resetAppBtn 누르기 전까지)
+            }
+        }
+    }
+
+    function resetApplication() {
+        beforeLabels = [];
+        beforeSnapshotData = null;
+        analyzeAfterBtn.disabled = true;
+        analyzeBeforeBtn.disabled = false;
+        closeResultModal(); // 모달 닫기
+        errorMessage.textContent = "";
+        analysisStatusMessage.textContent = "";
+        liveCtx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+        
+        // 카메라 스트림이 활성화되어 있지 않으면 다시 시작
+        if (!video.srcObject || !video.srcObject.active) {
+            initCameraAndModel(); 
+        }
+        showScreen('cameraScreen');
+    }
+
+    async function initCameraAndModel() {
+        showScreen('loadingScreen');
+        errorMessage.textContent = "";
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    facingMode: "environment",
+                    width: { ideal: 640 },
+                    height: { ideal: 480 }
+                } 
+            });
+            video.srcObject = stream;
+            await new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve();
+                };
+            });
+            liveCanvas.width = video.videoWidth;
+            liveCanvas.height = video.videoHeight;
+            modalCanvas.width = video.videoWidth;
+            modalCanvas.height = video.videoHeight;
+            console.log("✅ Camera initialized. Video dimensions:", video.videoWidth, video.videoHeight);
+
+            analysisStatusMessage.textContent = "모델 로딩 중...";
+            yoloModel = await tf.loadGraphModel('./models/yolov8n_oiv7_web_model/model.json'); 
+            console.log("✅ YOLOv8 Model loaded.");
+
+            // `customLabels`가 window.customLabels에서 제대로 로드되었는지 확인
+            if (!window.customLabels || window.customLabels.length === 0) {
+                errorMessage.textContent = "❗ 모델 레이블을 로드할 수 없습니다. 'label.js' 파일을 확인해주세요.";
+                console.error("Error: window.customLabels is undefined or empty.");
+                showScreen('cameraScreen');
+                analyzeBeforeBtn.disabled = true; 
+                analyzeAfterBtn.disabled = true;
+                return;
+            }
+            console.log("✅ Custom Labels loaded. Number of labels:", customLabels.length);
+
+            // messyLabelsForScoring 초기화 (customLabels와 hardcodedMessyLabels의 교집합)
+            messyLabelsForScoring = customLabels.filter(label => 
+                hardcodedMessyLabels.includes(label) 
+            ).map(label => label.toLowerCase());
+            console.log("✅ Messy Labels for Scoring initialized. Count:", messyLabelsForScoring.length);
+
+
+            analysisStatusMessage.textContent = "";
+            showScreen('cameraScreen');
+            detectLiveObjects();
+
+        } catch (error) {
+            console.error("Initialization error:", error);
+            errorMessage.textContent = "❗ 앱 초기화 오류: " + error.message + " (카메라 권한, 모델 파일 경로 등을 확인하세요)";
+            showScreen('cameraScreen');
+            analyzeBeforeBtn.disabled = true;
+            analyzeAfterBtn.disabled = true;
+        }
+    }
+
+    analyzeBeforeBtn.addEventListener("click", () => analyzeSnapshot('before'));
+    analyzeAfterBtn.addEventListener("click", () => analyzeSnapshot('after'));
+
+    initCameraAndModel();
+</script>
+</body>
+</html>
